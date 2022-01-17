@@ -58,6 +58,7 @@ static inline void IRQsetPriority(IRQn_Type irq, uint32_t prio,
       irq, NVIC_EncodePriority(NVIC_GetPriorityGrouping(), prio, subprio));
 }
 
+// DMA exception priorities
 #define DMA_IRQ_PRIO VERY_HIGH_IRQ_PRIO
 #define DMA_IRQ_SUBPRIO VERY_HIGH_IRQ_SUBPRIO
 
@@ -127,33 +128,41 @@ void DMA1_Stream6_IRQHandler() {
 /******************* CONFIGURATION ***********************/
 
 void configure() {
-  RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN |
-                  RCC_AHB1ENR_GPIOCEN | RCC_AHB1ENR_DMA1EN;
+  // Enable the clocks
+  RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_DMA1EN;
   RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
   RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
 
   __NOP();
 
+  // Set priority grouping
   NVIC_SetPriorityGrouping(PRIORITY_GROUP);
 
+  // Configure GPIOA
   GPIOafConfigure(GPIOA, 2, GPIO_OType_PP, GPIO_Fast_Speed, GPIO_PuPd_NOPULL,
                   GPIO_AF_USART2);
 
+  // Configure USART
   USART2->CR1 = USART_CR1_TE | USART_WordLength_8b | USART_Parity_No;
   USART2->CR2 = USART_StopBits_1;
   USART2->CR3 = USART_CR3_DMAT;
   USART2->BRR = (PCLK1_HZ + (BAUD_RATE / 2U)) / BAUD_RATE;
 
+  // Configure DMA
   DMA1_Stream6->CR =
       4U << 25 | DMA_SxCR_PL_1 | DMA_SxCR_MINC | DMA_SxCR_DIR_0 | DMA_SxCR_TCIE;
   DMA1_Stream6->PAR = (uint32_t)&USART2->DR;
 
+  // Clear the DMA exception pointer
   DMA1->HIFCR = DMA_HIFCR_CTCIF6;
 
+  // Set the DMA exception priority
   IRQsetDMAPriority(DMA1_Stream6_IRQn);
 
+  // Enable the DMA exception
   NVIC_EnableIRQ(DMA1_Stream6_IRQn);
 
+  // Enable USART
   USART2->CR1 |= USART_Enable;
 }
 
