@@ -114,6 +114,13 @@ void continue_transmission() {
   DMA1_Stream6->CR |= DMA_SxCR_EN;
 }
 
+void start_transmission() {
+  if ((DMA1_Stream6->CR & DMA_SxCR_EN) == 0 &&
+      (DMA1->HISR & DMA_HISR_TCIF6) == 0) {
+    continue_transmission();
+  }
+}
+
 /********************* DMA_HANDLERS **********************/
 
 void DMA1_Stream6_IRQHandler() {
@@ -170,6 +177,10 @@ void configure() {
 
 int main() {
   configure();
+
+  output_buffer_put("Nic\n");
+  output_buffer_put("Cos");
+  start_transmission();
 
   for (;;) {
   }
