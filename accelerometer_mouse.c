@@ -65,6 +65,13 @@ static inline void IRQsetPriority(IRQn_Type irq, uint32_t prio,
 #define IRQsetDMAPriority(STREAM) \
   IRQsetPriority(STREAM, DMA_IRQ_PRIO, DMA_IRQ_SUBPRIO)
 
+// Timer exception priorities
+#define TIMER_IRQ_PRIO VERY_HIGH_IRQ_PRIO
+#define TIMER_IRQ_SUBPRIO HIGH_IRQ_SUBPRIO
+
+#define IRQsetTimerPriority(TIMER) \
+  IRQsetPriority(TIMER, TIMER_IRQ_PRIO, TIMER_IRQ_SUBPRIO)
+
 /******************** OUTPUT_BUFFER **********************/
 
 #define BUFFER_SIZE 256
@@ -121,7 +128,14 @@ void start_transmission() {
   }
 }
 
-/********************* DMA_HANDLERS **********************/
+/*********************** PRINTING ************************/
+
+void print(char* word) {
+  output_buffer_put(word);
+  start_transmission();
+}
+
+/********************* DMA_HANDLER ***********************/
 
 void DMA1_Stream6_IRQHandler() {
   uint32_t isr = DMA1->HISR;
@@ -132,18 +146,28 @@ void DMA1_Stream6_IRQHandler() {
   }
 }
 
+/******************** TIMER_HANDLER **********************/
+
+void TIM3_IRQHandler(void) {
+  uint32_t it_status = TIM3->SR & TIM3->DIER;
+  if (it_status & TIM_SR_UIF) {
+    TIM3->SR = ~TIM_SR_UIF;
+
+    output_buffer_put("x");
+    start_transmission();
+  }
+  if (it_status & TIM_SR_CC1IF) {
+    TIM3->SR = ~TIM_SR_CC1IF;
+  }
+}
+
 /******************* CONFIGURATION ***********************/
 
-void configure() {
+void configure_usart_and_dma() {
   // Enable the clocks
   RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_DMA1EN;
   RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
   RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
-
-  __NOP();
-
-  // Set priority grouping
-  NVIC_SetPriorityGrouping(PRIORITY_GROUP);
 
   // Configure GPIOA
   GPIOafConfigure(GPIOA, 2, GPIO_OType_PP, GPIO_Fast_Speed, GPIO_PuPd_NOPULL,
@@ -163,24 +187,54 @@ void configure() {
   // Clear the DMA exception pointer
   DMA1->HIFCR = DMA_HIFCR_CTCIF6;
 
-  // Set the DMA exception priority
+  // Set DMA exception priority
   IRQsetDMAPriority(DMA1_Stream6_IRQn);
 
-  // Enable the DMA exception
+  // Enable DMA exception
   NVIC_EnableIRQ(DMA1_Stream6_IRQn);
 
   // Enable USART
   USART2->CR1 |= USART_Enable;
 }
 
+void configure_timer() {
+  // Enable the clock
+  RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
+
+  // Configure timer constants
+  TIM3->CR1 = TIM_CR1_URS;
+  TIM3->PSC = 16000 - 1;  // One tick every millisecond
+  TIM3->ARR = 1000;       // Break between exceptions in milliseconds
+  TIM3->EGR = TIM_EGR_UG;
+
+  TIM3->CNT = 0;
+
+  // Exceptions
+  TIM3->SR = ~(TIM_SR_UIF | TIM_SR_CC1IF);
+  TIM3->DIER = TIM_DIER_UIE | TIM_DIER_CC1IE;
+
+  // Set timer exception priority
+  IRQsetTimerPriority(TIM3_IRQn);
+
+  // Enable timer exception
+  NVIC_EnableIRQ(TIM3_IRQn);
+
+  // Enable timer
+  TIM3->CR1 |= TIM_CR1_CEN;
+}
+
+void configure() {
+  // Set priority grouping
+  NVIC_SetPriorityGrouping(PRIORITY_GROUP);
+
+  configure_usart_and_dma();
+  configure_timer();
+}
+
 /*********************************************************/
 
 int main() {
   configure();
-
-  output_buffer_put("Nic\n");
-  output_buffer_put("Cos");
-  start_transmission();
 
   for (;;) {
   }
