@@ -1,5 +1,6 @@
 #include <delay.h>
 #include <gpio.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stm32.h>
 #include <string.h>
@@ -46,6 +47,9 @@ void debug(char c) {
 #define HSI_HZ 16000000U
 #define PCLK1_HZ HSI_HZ
 #define BAUD_RATE 9600U
+
+#define I2C_SPEED_HZ 100000
+#define PCLK1_MHZ 16
 
 /*********************** PRIORITIES **********************/
 
@@ -135,6 +139,113 @@ void print(char* word) {
   start_transmission();
 }
 
+/******************* ACCELEROMETER ***********************/
+
+#define LIS35DE_ADDR 0x1C  // or 0x1D
+
+#define CTRL_REG1 0x20
+#define CTRL_REG1_DEF 0x07
+#define CTRL_REG1_PD 0x40  // Active mode
+
+#define OUT_X 0x29
+#define OUT_Y 0x2B
+#define OUT_Z 0x2D
+
+void write_to_accelerometer_register(uint8_t reg, uint8_t value) {
+  I2C1->CR1 |= I2C_CR1_START;
+
+  while (!(I2C1->SR1 & I2C_SR1_SB)) {
+  }
+
+  I2C1->DR = LIS35DE_ADDR << 1;
+
+  while (!(I2C1->SR1 & I2C_SR1_ADDR)) {
+  }
+
+  I2C1->SR2;
+
+  I2C1->DR = reg;
+
+  while (!(I2C1->SR1 & I2C_SR1_TXE)) {
+  }
+
+  I2C1->DR = value;
+
+  while (!(I2C1->SR1 & I2C_SR1_BTF)) {
+  }
+
+  I2C1->CR1 |= I2C_CR1_STOP;
+}
+
+uint8_t read_accelerometer_register(uint8_t reg) {
+  I2C1->CR1 |= I2C_CR1_START;
+
+  while (!(I2C1->SR1 & I2C_SR1_SB)) {
+  }
+
+  I2C1->DR = LIS35DE_ADDR << 1;
+  // print("b");
+  while (!(I2C1->SR1 & I2C_SR1_ADDR)) {
+  }
+
+  I2C1->SR2;
+
+  I2C1->DR = reg;
+  // print("c");
+  while (!(I2C1->SR1 & I2C_SR1_BTF)) {
+  }
+
+  I2C1->CR1 |= I2C_CR1_START;
+  // print("d");
+  while (!(I2C1->SR1 & I2C_SR1_SB)) {
+  }
+
+  I2C1->DR = LIS35DE_ADDR << 1 | 1;
+
+  I2C1->CR1 &= ~I2C_CR1_ACK;
+  // print("e");
+  while (!(I2C1->SR1 & I2C_SR1_ADDR)) {
+  }
+
+  I2C1->SR2;
+
+  I2C1->CR1 |= I2C_CR1_STOP;
+  // print("f");
+  while (!(I2C1->SR1 & I2C_SR1_RXNE)) {
+  }
+  // print("g");
+  uint8_t value = I2C1->DR;
+
+  return value;
+}
+
+void activate_accelerometer() {
+  write_to_accelerometer_register(CTRL_REG1, CTRL_REG1_DEF | CTRL_REG1_PD);
+}
+
+void print_coords() {
+  uint8_t x = read_accelerometer_register(OUT_X);
+  uint8_t y = read_accelerometer_register(OUT_Y);
+  uint8_t z = read_accelerometer_register(OUT_Z);
+
+  char x_s[4];
+  char y_s[4];
+  char z_s[4];
+
+  itoa(x, x_s, 10);
+  itoa(y, y_s, 10);
+  itoa(z, z_s, 10);
+
+  output_buffer_put("(");
+  output_buffer_put(x_s);
+  output_buffer_put(", ");
+  output_buffer_put(y_s);
+  output_buffer_put(", ");
+  output_buffer_put(z_s);
+  output_buffer_put(")");
+  start_transmission();
+}
+
 /********************* DMA_HANDLER ***********************/
 
 void DMA1_Stream6_IRQHandler() {
@@ -153,8 +264,7 @@ void TIM3_IRQHandler(void) {
   if (it_status & TIM_SR_UIF) {
     TIM3->SR = ~TIM_SR_UIF;
 
-    output_buffer_put("x");
-    start_transmission();
+    print_coords();
   }
   if (it_status & TIM_SR_CC1IF) {
     TIM3->SR = ~TIM_SR_CC1IF;
@@ -223,12 +333,37 @@ void configure_timer() {
   TIM3->CR1 |= TIM_CR1_CEN;
 }
 
+void configure_I2C() {
+  // Enable the clocks
+  RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
+  RCC->APB1ENR |= RCC_APB1ENR_I2C1EN;
+
+  // Configure GPIO
+  GPIOafConfigure(GPIOB, 8, GPIO_OType_OD, GPIO_Low_Speed, GPIO_PuPd_NOPULL,
+                  GPIO_AF_I2C1);
+  GPIOafConfigure(GPIOB, 9, GPIO_OType_OD, GPIO_Low_Speed, GPIO_PuPd_NOPULL,
+                  GPIO_AF_I2C1);
+
+  // Base version
+  I2C1->CR1 = 0;
+
+  // Configure clock frequency
+  I2C1->CCR = (PCLK1_MHZ * 1000000) / (I2C_SPEED_HZ << 1);
+  I2C1->CR2 = PCLK1_MHZ;
+  I2C1->TRISE = PCLK1_MHZ + 1;
+
+  // Enable I2C
+  I2C1->CR1 |= I2C_CR1_PE;
+}
+
 void configure() {
   // Set priority grouping
   NVIC_SetPriorityGrouping(PRIORITY_GROUP);
 
   configure_usart_and_dma();
   configure_timer();
+  configure_I2C();
+  activate_accelerometer();
 }
 
 /*********************************************************/
