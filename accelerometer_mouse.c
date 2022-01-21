@@ -71,10 +71,17 @@ static inline void IRQsetPriority(IRQn_Type irq, uint32_t prio,
 
 // Timer exception priorities
 #define TIMER_IRQ_PRIO VERY_HIGH_IRQ_PRIO
-#define TIMER_IRQ_SUBPRIO HIGH_IRQ_SUBPRIO
+#define TIMER_IRQ_SUBPRIO MIDDLE_IRQ_SUBPRIO
 
 #define IRQsetTimerPriority(TIMER) \
   IRQsetPriority(TIMER, TIMER_IRQ_PRIO, TIMER_IRQ_SUBPRIO)
+
+// I2C exception priorities
+#define I2C_IRQ_PRIO VERY_HIGH_IRQ_PRIO
+#define I2C_IRQ_SUBPRIO HIGH_IRQ_SUBPRIO
+
+#define IRQsetI2CPriority(LINE) \
+  IRQsetPriority(LINE, I2C_IRQ_PRIO, I2C_IRQ_SUBPRIO)
 
 /******************** OUTPUT_BUFFER **********************/
 
@@ -84,32 +91,38 @@ typedef struct {
   char* buf[BUFFER_SIZE];
   int start;
   int end;
-} OutputBuffer;
+} Buffer;
 
-OutputBuffer output_buffer;
+Buffer output_buffer;
 
-int output_buffer_empty() { return output_buffer.end == output_buffer.start; }
+int buffer_empty(Buffer* buffer) { return buffer->end == buffer->start; }
 
-int output_buffer_full() {
-  return (output_buffer.end + 1) % BUFFER_SIZE == output_buffer.start;
+int buffer_full(Buffer* buffer) {
+  return (buffer->end + 1) % BUFFER_SIZE == buffer->start;
 }
 
-char* output_buffer_get() {
-  if (output_buffer_empty()) {
+char* buffer_get(Buffer* buffer) {
+  if (buffer_empty(buffer)) {
     return "";
   } else {
-    char* res = output_buffer.buf[output_buffer.start];
-    output_buffer.start = (output_buffer.start + 1) % BUFFER_SIZE;
+    char* res = buffer->buf[buffer->start];
+    buffer->start = (buffer->start + 1) % BUFFER_SIZE;
     return res;
   }
 }
 
-void output_buffer_put(char* word) {
-  if (!output_buffer_full()) {
-    output_buffer.buf[output_buffer.end] = word;
-    output_buffer.end = (output_buffer.end + 1) % BUFFER_SIZE;
+void buffer_put(Buffer* buffer, char* word) {
+  if (!buffer_full(buffer)) {
+    buffer->buf[buffer->end] = word;
+    buffer->end = (buffer->end + 1) % BUFFER_SIZE;
   }
 }
+
+int output_buffer_empty() { return buffer_empty(&output_buffer); }
+
+char* output_buffer_get() { return buffer_get(&output_buffer); }
+
+void output_buffer_put(char* word) { buffer_put(&output_buffer, word); }
 
 /******************** TRANSMISSION ***********************/
 
@@ -151,99 +164,135 @@ void print(char* word) {
 #define OUT_Y 0x2B
 #define OUT_Z 0x2D
 
-void write_to_accelerometer_register(uint8_t reg, uint8_t value) {
-  I2C1->CR1 |= I2C_CR1_START;
+#define REQUEST_X "X"
+#define REQUEST_Y "Y"
 
-  while (!(I2C1->SR1 & I2C_SR1_SB)) {
+Buffer accelerometer_request_buffer;
+uint8_t current_request_reg = OUT_X;
+int before_repeated_start = 1;
+int request_pending = 0;
+
+int accelerometer_write_mode = 1;
+
+int control_register_initialized = 0;
+
+void send_read_requests() {
+  if (!request_pending && !buffer_empty(&accelerometer_request_buffer)) {
+    request_pending = 1;
+    before_repeated_start = 1;
+
+    I2C1->CR1 |= I2C_CR1_START;
   }
-
-  I2C1->DR = LIS35DE_ADDR << 1;
-
-  while (!(I2C1->SR1 & I2C_SR1_ADDR)) {
-  }
-
-  I2C1->SR2;
-
-  I2C1->DR = reg;
-
-  while (!(I2C1->SR1 & I2C_SR1_TXE)) {
-  }
-
-  I2C1->DR = value;
-
-  while (!(I2C1->SR1 & I2C_SR1_BTF)) {
-  }
-
-  I2C1->CR1 |= I2C_CR1_STOP;
-}
-
-uint8_t read_accelerometer_register(uint8_t reg) {
-  I2C1->CR1 |= I2C_CR1_START;
-
-  while (!(I2C1->SR1 & I2C_SR1_SB)) {
-  }
-
-  I2C1->DR = LIS35DE_ADDR << 1;
-  // print("b");
-  while (!(I2C1->SR1 & I2C_SR1_ADDR)) {
-  }
-
-  I2C1->SR2;
-
-  I2C1->DR = reg;
-  // print("c");
-  while (!(I2C1->SR1 & I2C_SR1_BTF)) {
-  }
-
-  I2C1->CR1 |= I2C_CR1_START;
-  // print("d");
-  while (!(I2C1->SR1 & I2C_SR1_SB)) {
-  }
-
-  I2C1->DR = LIS35DE_ADDR << 1 | 1;
-
-  I2C1->CR1 &= ~I2C_CR1_ACK;
-  // print("e");
-  while (!(I2C1->SR1 & I2C_SR1_ADDR)) {
-  }
-
-  I2C1->SR2;
-
-  I2C1->CR1 |= I2C_CR1_STOP;
-  // print("f");
-  while (!(I2C1->SR1 & I2C_SR1_RXNE)) {
-  }
-  // print("g");
-  uint8_t value = I2C1->DR;
-
-  return value;
 }
 
 void activate_accelerometer() {
-  write_to_accelerometer_register(CTRL_REG1, CTRL_REG1_DEF | CTRL_REG1_PD);
+  request_pending = 1;
+  I2C1->CR1 |= I2C_CR1_START;
 }
 
 void print_coords() {
-  uint8_t x = read_accelerometer_register(OUT_X);
-  uint8_t y = read_accelerometer_register(OUT_Y);
-  uint8_t z = read_accelerometer_register(OUT_Z);
+  buffer_put(&accelerometer_request_buffer, REQUEST_X);
+  buffer_put(&accelerometer_request_buffer, REQUEST_Y);
 
-  char x_s[4];
-  char y_s[4];
-  char z_s[4];
+  send_read_requests();
+}
 
-  itoa(x, x_s, 10);
-  itoa(y, y_s, 10);
-  itoa(z, z_s, 10);
+/********************* I2C_HANDLER ***********************/
 
-  output_buffer_put("(");
-  output_buffer_put(x_s);
-  output_buffer_put(", ");
-  output_buffer_put(y_s);
-  output_buffer_put(", ");
-  output_buffer_put(z_s);
-  output_buffer_put(")");
-  start_transmission();
+void I2C1_EV_IRQHandler(void) {
+  uint16_t sr1_status = I2C1->SR1;
+
+  if (accelerometer_write_mode) {
+    // write to accelerometer register
+    if (sr1_status & I2C_SR1_SB) {
+      // start bit sent
+      I2C1->DR = LIS35DE_ADDR << 1;
+    }
+
+    if (sr1_status & I2C_SR1_ADDR) {
+      // address sent
+      I2C1->SR2;
+      I2C1->DR = CTRL_REG1;
+    }
+
+    if (sr1_status & I2C_SR1_TXE) {
+      // trasmitter data register empty
+      if (!control_register_initialized) {
+        control_register_initialized = 1;
+        I2C1->DR = CTRL_REG1_DEF | CTRL_REG1_PD;
+      }
+    }
+
+    if (sr1_status & I2C_SR1_BTF) {
+      // byte transfer finished
+      I2C1->CR1 |= I2C_CR1_STOP;
+      accelerometer_write_mode = 0;
+      request_pending = 0;
+    }
+  } else {
+    // read from accelerometer register
+
+    if (sr1_status & I2C_SR1_SB && before_repeated_start) {
+      // start bit sent
+      I2C1->DR = LIS35DE_ADDR << 1;
+    }
+
+    if (sr1_status & I2C_SR1_ADDR && before_repeated_start) {
+      // address sent
+      if (buffer_empty(&accelerometer_request_buffer)) {
+        // no coord requests
+        return;
+      }
+
+      current_request_reg = OUT_X;
+      char* req = buffer_get(&accelerometer_request_buffer);
+      if (req[0] == 'Y') {
+        // requested Y coord
+        current_request_reg = OUT_Y;
+      }
+
+      I2C1->SR2;
+      I2C1->DR = current_request_reg;
+    }
+
+    if (sr1_status & I2C_SR1_BTF) {
+      // byte transfer finished
+      before_repeated_start = 0;
+      I2C1->CR1 |= I2C_CR1_START;
+    }
+
+    if (sr1_status & I2C_SR1_SB && !before_repeated_start) {
+      // repeated start
+      I2C1->DR = LIS35DE_ADDR << 1 | 1;
+      I2C1->CR1 &= ~I2C_CR1_ACK;
+    }
+
+    if (sr1_status & I2C_SR1_ADDR && !before_repeated_start) {
+      // address sent after repeated start
+      I2C1->SR2;
+      I2C1->CR1 |= I2C_CR1_STOP;
+    }
+
+    if (sr1_status & I2C_SR1_RXNE) {
+      // receiver data register not empty
+      uint8_t value = I2C1->DR;
+      char value_s[4];
+      itoa(value, value_s, 10);
+
+      if (current_request_reg == OUT_X) {
+        output_buffer_put("(");
+        output_buffer_put(value_s);
+        output_buffer_put(",");
+      } else {
+        output_buffer_put(value_s);
+        output_buffer_put(")");
+      }
+      start_transmission();
+
+      request_pending = 0;
+      send_read_requests();
+    }
+  }
 }
 
 /********************* DMA_HANDLER ***********************/
@@ -351,6 +400,15 @@ void configure_I2C() {
   I2C1->CCR = (PCLK1_MHZ * 1000000) / (I2C_SPEED_HZ << 1);
   I2C1->CR2 = PCLK1_MHZ;
   I2C1->TRISE = PCLK1_MHZ + 1;
+
+  // Exceptions
+  I2C1->CR2 |= I2C_CR2_ITBUFEN | I2C_CR2_ITEVTEN;
+
+  // Set I2C exception priority
+  IRQsetI2CPriority(I2C1_EV_IRQn);
+
+  // Enable I2C exception
+  NVIC_EnableIRQ(I2C1_EV_IRQn);
 
   // Enable I2C
   I2C1->CR1 |= I2C_CR1_PE;
