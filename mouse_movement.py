@@ -1,7 +1,8 @@
 import mouse
 import serial
 
-DIVISOR = 1
+DIVISOR = .7
+MOVE_DURATION = .035
 
 def get_signed_coord(c):
   if c < 128:
@@ -19,13 +20,13 @@ while True:
   data = stm.read_until(b')')
   
   if data:
-    print(data)
+    # print(data)
     data = data.decode()
     
     if data[-1] != ')' or data[0] != '(':
       continue
 
-    print(data)
+    # print(data)
     data = data[1:-1]
     coords = data.split(',')
     try:
@@ -35,11 +36,8 @@ while True:
       x = get_signed_coord(x)
       y = get_signed_coord(y)
 
-      mouse.move(x / DIVISOR, -y / DIVISOR, absolute=False)
+      mouse.move(x / DIVISOR, -y / DIVISOR, absolute=False, duration=MOVE_DURATION)
 
-      print(x, y)
+      # print(x, y)
     except:
       pass
-
-# for _ in range(10):
-#   mouse.move(30, 30, absolute=False, duration=.1)

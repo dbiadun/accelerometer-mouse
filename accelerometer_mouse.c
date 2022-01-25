@@ -70,40 +70,24 @@ static inline void IRQsetPriority(IRQn_Type irq, uint32_t prio,
   IRQsetPriority(STREAM, DMA_IRQ_PRIO, DMA_IRQ_SUBPRIO)
 
 // Timer exception priorities
-#define TIMER_IRQ_PRIO MIDDLE_IRQ_PRIO
-#define TIMER_IRQ_SUBPRIO HIGH_IRQ_SUBPRIO
+#define TIMER_IRQ_PRIO HIGH_IRQ_PRIO
+#define TIMER_IRQ_SUBPRIO MIDDLE_IRQ_SUBPRIO
 
 #define IRQsetTimerPriority(TIMER) \
   IRQsetPriority(TIMER, TIMER_IRQ_PRIO, TIMER_IRQ_SUBPRIO)
 
 // I2C exception priorities
-#define I2C_IRQ_PRIO MIDDLE_IRQ_PRIO
-#define I2C_IRQ_SUBPRIO VERY_HIGH_IRQ_SUBPRIO
+#define I2C_IRQ_PRIO HIGH_IRQ_PRIO
+#define I2C_IRQ_SUBPRIO HIGH_IRQ_SUBPRIO
 
 #define IRQsetI2CPriority(LINE) \
   IRQsetPriority(LINE, I2C_IRQ_PRIO, I2C_IRQ_SUBPRIO)
 
-// Interrupts protection level
-#define PREEM_PRIO_BITS 2U
-typedef uint32_t irq_level_t;
-irq_level_t protection_level = 0;
-
-// Set interrupts protection level
-static inline void IRQprotect(uint32_t priority) {
-  irq_level_t level;
-  level = __get_BASEPRI();
-  priority <<= 8U - PREEM_PRIO_BITS;
-  if (level == 0 || priority < level) {
-    __set_BASEPRI(priority);
-  }
-  protection_level = level;
-}
-
-static inline void IRQunprotect() { __set_BASEPRI(protection_level); }
-
 /******************** OUTPUT_BUFFER **********************/
 
 #define BUFFER_SIZE 256
+#define COORDS_BUFFER_SIZE 16
+#define COORD_SIZE 4
 
 typedef struct {
   char* buf[BUFFER_SIZE];
@@ -112,6 +96,8 @@ typedef struct {
 } Buffer;
 
 Buffer output_buffer;
+char coords_buffer[COORDS_BUFFER_SIZE * COORD_SIZE];
+size_t current_coords_string_offset = 0;
 
 int buffer_empty(Buffer* buffer) { return buffer->end == buffer->start; }
 
@@ -142,19 +128,21 @@ char* output_buffer_get() { return buffer_get(&output_buffer); }
 
 void output_buffer_put(char* word) { buffer_put(&output_buffer, word); }
 
+char* next_coords_string() {
+  current_coords_string_offset += COORD_SIZE;
+  current_coords_string_offset %= (COORDS_BUFFER_SIZE * COORD_SIZE);
+  return coords_buffer + current_coords_string_offset;
+}
+
 /******************** TRANSMISSION ***********************/
 
 void continue_transmission() {
-  // DMA interrupt needs to be locked here (if not called in DMA interrupt)
   if (output_buffer_empty()) {
-    IRQunprotect();  // Unlock I2C interrupts of DMA interrupt locked in I2C
-                     // handler
     return;
   }
 
   char* word = output_buffer_get();
-  IRQunprotect();            // Unlock DMA interrupt locked in I2C handler
-  IRQprotect(I2C_IRQ_PRIO);  // Prevent I2C from writing over data used by DMA
+
   DMA1_Stream6->M0AR = (uint32_t)word;
   DMA1_Stream6->NDTR = strlen(word);
   DMA1_Stream6->CR |= DMA_SxCR_EN;
@@ -170,7 +158,6 @@ void start_transmission() {
 /*********************** PRINTING ************************/
 
 void print(char* word) {
-  IRQprotect(DMA_IRQ_PRIO);
   output_buffer_put(word);
   start_transmission();
 }
@@ -214,10 +201,8 @@ void activate_accelerometer() {
 }
 
 void print_coords() {
-  IRQprotect(DMA_IRQ_PRIO);
   buffer_put(&accelerometer_request_buffer, REQUEST_X);
   buffer_put(&accelerometer_request_buffer, REQUEST_Y);
-  IRQunprotect();
   send_read_requests();
 }
 
@@ -300,11 +285,10 @@ void I2C1_EV_IRQHandler(void) {
     if (sr1_status & I2C_SR1_RXNE) {
       // receiver data register not empty
       uint8_t value = I2C1->DR;
-      char value_s[4];
+      char* value_s = next_coords_string();
 
       itoa(value, value_s, 10);
 
-      IRQprotect(DMA_IRQ_PRIO);
       if (current_request_reg == OUT_X) {
         output_buffer_put("(");
         output_buffer_put(value_s);
@@ -340,9 +324,6 @@ void TIM3_IRQHandler(void) {
     TIM3->SR = ~TIM_SR_UIF;
 
     print_coords();
-  }
-  if (it_status & TIM_SR_CC1IF) {
-    TIM3->SR = ~TIM_SR_CC1IF;
   }
 }
 
@@ -395,8 +376,8 @@ void configure_timer() {
   TIM3->CNT = 0;
 
   // Exceptions
-  TIM3->SR = ~(TIM_SR_UIF | TIM_SR_CC1IF);
-  TIM3->DIER = TIM_DIER_UIE | TIM_DIER_CC1IE;
+  TIM3->SR = ~TIM_SR_UIF;
+  TIM3->DIER = TIM_DIER_UIE;
 
   // Set timer exception priority
   IRQsetTimerPriority(TIM3_IRQn);
@@ -445,9 +426,9 @@ void configure() {
   NVIC_SetPriorityGrouping(PRIORITY_GROUP);
 
   configure_usart_and_dma();
-  configure_timer();
   configure_I2C();
   activate_accelerometer();
+  configure_timer();
 }
 
 /*********************************************************/
